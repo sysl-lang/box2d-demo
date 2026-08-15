@@ -12,8 +12,8 @@ package {
 
 dependencies {
   box2d { git = "github.com/sysl-lang/box2d", version = "0.1.0" }
-  cairo { git = "github.com/sysl-lang/cairo", version = "0.3.1" }
-  sdl3  { git = "github.com/sysl-lang/sdl3",  version = "0.2.0" }
+  cairo { git = "github.com/sysl-lang/cairo", version = "0.3.2" }
+  sdl3  { git = "github.com/sysl-lang/sdl3",  version = "0.2.1" }
 }
 
 requires {
@@ -22,13 +22,15 @@ requires {
 }
 
 // `box2d` needs nothing installed — it carries Box2D's own C. `cairo` and `sdl3` each want a library
-// this machine has to have, and each declares the header it needs by name, so forgetting the path is
-// refused by a sentence naming the library rather than by clang reporting a file nobody wrote:
+// this machine has to have, and each names it so that pkg-config can be asked where it is:
 //
 //     brew install cairo sdl3
-//     sysl run . --link-path /opt/homebrew/lib \
-//                --include-path cairo=/opt/homebrew/include/cairo \
-//                --include-path sdl3=/opt/homebrew/include
+//     sysl run .
 //
-// Where a prefix lives is a fact about a machine rather than a property of a package, which is why
-// `design/15 §8` will not let this file say it.
+// Where a prefix lives is still a fact about a machine rather than a property of a package, which is
+// why `design/15 §8` will not let this file say it. What changed is who answers: the machine, rather
+// than a reader copying its layout onto a command line — and getting it right, which meant knowing
+// that cairo's headers sit in `include/cairo` while SDL3's want the directory *above* `SDL3`.
+//
+// Needs sysl 0.0.56, cairo 0.3.2 and sdl3 0.2.1. On a machine with no pkg-config the two
+// `--include-path` flags still answer it.

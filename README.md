@@ -8,9 +8,7 @@ more in, watch the pile go to sleep. [**cairo**](https://github.com/sysl-lang/ca
 
 ```
 brew install cairo sdl3
-sysl run . --link-path /opt/homebrew/lib \
-           --include-path cairo=/opt/homebrew/include/cairo \
-           --include-path sdl3=/opt/homebrew/include
+sysl run .
 ```
 
 | | what it does |
@@ -38,8 +36,14 @@ cairo draws into an image surface -> surface.data() -> texture.update() -> prese
 ```
 
 `box2d` needs nothing installed at all; it carries Box2D's own C. The other two want a library this
-machine has to have, and each declares by name the header it needs, so forgetting a path is refused
-by a sentence naming the library rather than by clang reporting a file nobody wrote.
+machine has to have, and each **names** it — so pkg-config is asked where it lives and you type
+nothing. A machine without the library is refused by a sentence naming the library, rather than by
+clang reporting a file nobody wrote.
+
+That is worth a line because of what it replaces. This page used to carry three flags, and one of
+them had to know that cairo's headers are in `include/cairo` while SDL3's want the directory *above*
+`SDL3` — a distinction no reader could be expected to guess, and the reason the packages had to spell
+it out in prose. Needs sysl 0.0.56 or later.
 
 ## Drawn in metres, not in pixels
 
