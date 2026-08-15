@@ -1,0 +1,34 @@
+// A Box2D playground for sysl — three packages, each doing the one thing it is for.
+//
+// **box2d** decides where everything is, **cairo** cuts the shapes and **sdl3** turns the crank.
+// None of them knows about the others: the join between the last two is one buffer of ARGB32 pixels,
+// which is cairo's native format and one of SDL's texture formats and the same bytes on a
+// little-endian machine, so nothing is converted at all.
+
+package {
+  name    = "box2d-demo"
+  version = "0.1.0"
+}
+
+dependencies {
+  box2d { git = "github.com/sysl-lang/box2d", version = "0.1.0" }
+  cairo { git = "github.com/sysl-lang/cairo", version = "0.3.1" }
+  sdl3  { git = "github.com/sysl-lang/sdl3",  version = "0.2.0" }
+}
+
+requires {
+  os   = true
+  heap = true
+}
+
+// `box2d` needs nothing installed — it carries Box2D's own C. `cairo` and `sdl3` each want a library
+// this machine has to have, and each declares the header it needs by name, so forgetting the path is
+// refused by a sentence naming the library rather than by clang reporting a file nobody wrote:
+//
+//     brew install cairo sdl3
+//     sysl run . --link-path /opt/homebrew/lib \
+//                --include-path cairo=/opt/homebrew/include/cairo \
+//                --include-path sdl3=/opt/homebrew/include
+//
+// Where a prefix lives is a fact about a machine rather than a property of a package, which is why
+// `design/15 §8` will not let this file say it.

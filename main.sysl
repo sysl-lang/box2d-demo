@@ -1,0 +1,594 @@
+// A Box2D playground — grab a body and throw it, drop more in, watch the pile go to sleep.
+//
+// Three packages, each doing the one thing it is for. **box2d** decides where everything is;
+// **cairo** cuts the shapes, antialiased, in world coordinates; **SDL3** opens the window, reads the
+// mouse and puts the pixels up. None of them knows about the others.
+//
+// The join between the last two is **one buffer of ARGB32 pixels** — cairo's `Format.Argb32` and
+// SDL's `PixelFormat.Argb8888` are the same bytes on a little-endian machine, so nothing is
+// converted and the texture is uploaded straight out of cairo's own storage:
+//
+//     cairo draws into an image surface -> surface.data() -> texture.update() -> present
+//
+// ## Drawing in metres rather than in pixels
+//
+// Box2D works in metres and cairo works in whatever the current matrix says, so the matrix is set
+// once per frame and every shape is then drawn at the coordinates the simulation actually holds.
+// The y scale is **negative**, because Box2D's y points up and a window's points down; that one
+// sign is the whole of the coordinate conversion, and there is no `to_screen` helper anywhere in
+// this program.
+//
+// A line width is then in metres too, which is what makes an outline stay the same thickness
+// relative to the bodies rather than to the window.
+//
+// ## What is worth watching
+//
+// **A body that has stopped moving dims.** That is Box2D putting it to sleep — it has been nearly
+// still for half a second and now costs the solver nothing until something touches it. Nothing else
+// in the binding makes that visible, and it is one of the engine's better properties. Grab a
+// sleeping body and the whole pile wakes.
+//
+// **A white ring flashes where something hits hard.** Those are hit events, which arrive as an array
+// after the step with the point and the approach speed in them. In a game this is where a sound
+// would be triggered.
+
+import sh.sysl.box2d.*
+import sh.sysl.box2d.math.{Vec2, Transform, AABB, zero, rot}
+import sh.sysl.cairo.*
+import sh.sysl.sdl3.*
+import sh.sysl.sdl3.c.INIT_VIDEO
+import sysl.math.{Float, pi}
+import sysl.rand.rng
+import sysl.slices.as_ptr
+import sysl.buf.{Buf, buf}
+import sh.sysl.box2d.c
+
+// ## The window, and the piece of the world it shows
+
+const W: int = 900
+const H: int = 640
+
+// Metres across the window. Everything else follows from this: the scale, the ground's width, the
+// size of the shapes that get dropped.
+const VIEW_METRES: real = 12.0
+
+const SCALE: real = real(W) / VIEW_METRES
+
+// Where the world's origin sits in the window: centred across, and low enough that the ground is
+// near the bottom with room above it to drop things from.
+const ORIGIN_X: real = real(W) / 2.0
+const ORIGIN_Y: real = real(H) - 80.0
+
+// ## Colour
+//
+// Cairo takes each channel as a `real` in `[0, 1]`, so these are written that way rather than as
+// bytes with a conversion at every call.
+
+struct Colour
+    r: real
+    g: real
+    b: real
+
+    // The same colour, darkened. What a sleeping body is drawn in.
+    dim(self, k: real) -> Colour = Colour(self.r * k, self.g * k, self.b * k)
+
+val BACKGROUND: Colour = Colour(0.08, 0.09, 0.12)
+val GROUND: Colour = Colour(0.24, 0.26, 0.31)
+val OUTLINE: Colour = Colour(0.05, 0.05, 0.07)
+val HELD: Colour = Colour(1.0, 0.95, 0.55)
+val TEXT: Colour = Colour(0.72, 0.76, 0.84)
+val FLASH: Colour = Colour(1.0, 1.0, 1.0)
+
+// Eight colours a dynamic body is given by its index, so the same body keeps its colour for as long
+// as it lives and two neighbours rarely share one.
+val PALETTE: [8]Colour = [
+    Colour(0.91, 0.30, 0.24), Colour(0.20, 0.68, 0.75), Colour(0.55, 0.76, 0.14),
+    Colour(1.00, 0.72, 0.20), Colour(0.61, 0.35, 0.71), Colour(0.30, 0.55, 0.90),
+    Colour(0.95, 0.45, 0.60), Colour(0.40, 0.80, 0.55)
+]
+
+private paint(cr: &Context, col: Colour) = cr.set_source_rgb(col.r, col.g, col.b)
+private paint_alpha(cr: &Context, col: Colour, a: real) = cr.set_source_rgba(col.r, col.g, col.b, a)
+
+// ## A hit, while it is still worth drawing
+//
+// A hit event is reported for the one step it happened in, and a ring that appeared and vanished in
+// a sixtieth of a second would not be seen. Each is kept for a fifth of a second and fades out.
+
+struct Flash
+    at: Vec2
+    speed: f32
+    life: real
+
+// ## The scene
+//
+// Everything the frame loop needs. `held` is the mouse joint while a body is being dragged, and
+// `None` the rest of the time — which is the whole of the drag state, because the joint *is* the
+// drag.
+
+struct Scene
+    world: &World
+    held: Option[MouseJoint]
+    anchor: Body
+    flashes: Buf[Flash]
+    paused: bool
+    dropped: int
+    seed: u64
+
+// The ground: a floor with a wall at each end, so that what is thrown in mostly stays in. It is one
+// static body carrying three shapes, which is how a compound object is built — a body is a position
+// and a velocity, and geometry is bolted on separately.
+private build_ground(w: &World) -> Body
+    val g = w.body(body_def())
+    val half = f32(VIEW_METRES) * 0.5
+
+    g.polygon(shape_def(friction = 0.7), make_offset_box(half, 0.4, Vec2(0.0, -0.4)))
+    g.polygon(shape_def(friction = 0.4), make_offset_box(0.4, 3.0, Vec2(-half + 0.4, 3.0)))
+    g.polygon(shape_def(friction = 0.4), make_offset_box(0.4, 3.0, Vec2(half - 0.4, 3.0)))
+
+    g
+end build_ground
+
+// One body of a randomly chosen kind at a point. The four kinds are here so that every path in the
+// binding's drawing code is on screen at once, rather than a screenful of boxes.
+private drop_one(s: *Scene, at: Vec2)
+    var r = rng(s[0].seed, 1u64)
+
+    s[0].seed = s[0].seed * 6364136223846793005u64 + 1442695040888963407u64
+    s[0].dropped += 1
+
+    val b = s[0].world.body(body_def(kind = BodyKind.Dynamic, position = at,
+                                     rotation = rot(f32(r.unit()) * 6.283)))
+    val def = shape_def(density = 1.0, friction = 0.4, restitution = 0.15, enable_hit_events = true)
+    val pick = r.below(4u64)
+
+    if pick == 0u64
+        b.circle(def, circle(zero(), 0.3 + f32(r.unit()) * 0.25))
+    elif pick == 1u64
+        val hw = 0.28 + f32(r.unit()) * 0.30
+        val hh = 0.28 + f32(r.unit()) * 0.30
+
+        b.polygon(def, make_box(hw, hh))
+    elif pick == 2u64
+        val len = 0.3 + f32(r.unit()) * 0.35
+
+        b.capsule(def, capsule(Vec2(-len, 0.0), Vec2(len, 0.0), 0.22))
+    else
+        // A triangle, through the hull — the path that answers `None` for points that are not a
+        // polygon, which is why it is `unwrap`ed here and not assumed anywhere else.
+        val side = 0.5 + f32(r.unit()) * 0.4
+        val tri = make_polygon([Vec2(-side, -side * 0.6), Vec2(side, -side * 0.6), Vec2(0.0, side)])
+
+        if tri.is_some() then b.polygon(def, tri.unwrap())
+end drop_one
+
+// A fresh pile. Called at startup and by `R`.
+private reset(s: *Scene)
+    // Everything made in the old world goes with it: `b2DestroyWorld` frees every body, shape and
+    // joint, and the binding's `impl Drop` on `&World` is what runs it. Nothing here is closed by
+    // hand.
+    s[0].world = world(gravity = Vec2(0.0, -10.0))
+    s[0].held = None
+    s[0].anchor = build_ground(s[0].world)
+    s[0].seed = 20260814u64
+    s[0].dropped = 0
+
+    s[0].flashes.clear()
+
+    // A starting pile, dropped from a height so it settles into something worth looking at.
+    for i in 0..<20
+        val x = f32(i % 5) * 1.1 - 2.2
+        val y = 2.5 + f32(i / 5) * 1.4
+
+        drop_one(s, Vec2(x, y))
+end reset
+
+// ## Picking
+//
+// **What is under the cursor is two questions, not one.** `overlap_aabb` is a broad-phase query and
+// answers in bounding boxes, so it reports a shape whose box covers the point even where its
+// geometry does not; `test_point` then asks the exact question of each candidate. Asking the exact
+// question of every shape in the world would be the alternative, and it is what the broad phase
+// exists to avoid.
+private pick(w: &World, at: Vec2) -> Option[Body]
+    val nudge = Vec2(0.01, 0.01)
+    val found = w.overlap_aabb(AABB(at - nudge, at + nudge))
+
+    for s in found
+        if s.body().kind() != BodyKind.Static && s.test_point(at) then return Some(s.body())
+
+    None
+end pick
+
+// ## Drawing
+//
+// Each of these draws in **world coordinates**, because the matrix has already been set. A line
+// width is in metres for the same reason.
+
+const OUTLINE_WIDTH: real = 0.035
+
+private draw_polygon(cr: &Context, xf: Transform, p: c.Polygon)
+    val first = xf.apply(p.vertices[0])
+
+    cr.move_to(real(first.x), real(first.y))
+
+    for i in 1..<usize(p.count)
+        val v = xf.apply(p.vertices[i])
+
+        cr.line_to(real(v.x), real(v.y))
+
+    cr.close_path()
+end draw_polygon
+
+// A capsule is a **round-capped stroke**, which is what a capsule is: the set of points within
+// `radius` of a segment. Filling it as a path would mean two arcs and two tangent lines; stroking it
+// is one line and cairo's round cap is exact.
+private stroke_capsule(cr: &Context, xf: Transform, cap: c.Capsule, width_extra: real)
+    val a = xf.apply(cap.center1)
+    val b = xf.apply(cap.center2)
+
+    cr.set_line_cap(LineCap.Round)
+    cr.set_line_width(real(cap.radius) * 2.0 + width_extra)
+    cr.move_to(real(a.x), real(a.y))
+    cr.line_to(real(b.x), real(b.y))
+    cr.stroke()
+end stroke_capsule
+
+// One shape, filled in its body's colour and outlined. A sleeping body is drawn dimmer, and a body
+// being dragged is drawn in the highlight colour whatever its own is.
+private draw_shape(cr: &Context, s: Shape, col: Colour)
+    val b = s.body()
+    val xf = b.transform()
+    val kind = s.kind()
+
+    if kind == ShapeKind.Capsule
+        val cap = s.as_capsule()
+
+        // The outline first, as a wider stroke underneath, since a capsule is drawn by stroking and
+        // cannot be filled-then-outlined the way a path can.
+        paint(cr, OUTLINE)
+        stroke_capsule(cr, xf, cap, OUTLINE_WIDTH * 2.0)
+        paint(cr, col)
+        stroke_capsule(cr, xf, cap, 0.0)
+    elif kind == ShapeKind.Circle
+        val c0 = s.as_circle()
+        val p = xf.apply(c0.center)
+
+        cr.arc(real(p.x), real(p.y), real(c0.radius), 0.0, 2.0 * pi)
+        paint(cr, col)
+        cr.fill_preserve()
+        paint(cr, OUTLINE)
+        cr.set_line_width(OUTLINE_WIDTH)
+        cr.stroke()
+
+        // A spoke, because a filled disc gives no sign that it is rolling. This is the one place the
+        // rotation is drawn rather than implied.
+        val spoke = xf.apply(c0.center + b.rotation().rotate(Vec2(c0.radius, 0.0)))
+
+        cr.move_to(real(p.x), real(p.y))
+        cr.line_to(real(spoke.x), real(spoke.y))
+        paint(cr, OUTLINE)
+        cr.set_line_width(OUTLINE_WIDTH)
+        cr.stroke()
+    elif kind == ShapeKind.Polygon
+        draw_polygon(cr, xf, s.as_polygon())
+        paint(cr, col)
+        cr.fill_preserve()
+        paint(cr, OUTLINE)
+        cr.set_line_width(OUTLINE_WIDTH)
+        cr.stroke()
+    else
+        val seg = s.as_segment()
+        val a = xf.apply(seg.point1)
+        val z = xf.apply(seg.point2)
+
+        cr.move_to(real(a.x), real(a.y))
+        cr.line_to(real(z.x), real(z.y))
+        paint(cr, col)
+        cr.set_line_width(OUTLINE_WIDTH * 2.0)
+        cr.stroke()
+end draw_shape
+
+// Which colour a body gets: the ground its own, everything else one of the eight by index, dimmed
+// while it sleeps and replaced entirely while it is held.
+private colour_of(b: Body, held: bool) -> Colour
+    if held then return HELD
+    if b.kind() == BodyKind.Static then return GROUND
+
+    val base = PALETTE[usize(b.id.index1 % 8)]
+
+    if b.is_awake() then base else base.dim(0.42)
+end colour_of
+
+// ## The HUD
+//
+// Drawn in **device coordinates**, so the matrix is put back to the identity first. Text under a
+// flipped y scale would be upside down, which is the one thing the world matrix cannot be left on
+// for.
+
+private label(cr: &Context, x: real, y: real, s: string)
+    cr.move_to(x, y)
+    cr.show_text(s)
+end label
+
+// One decimal place, by arithmetic rather than by a format specifier.
+private one_dp(x: real) -> string
+    val n = int(x * 10.0 + 0.5)
+
+    str(n / 10) + "." + str(n % 10)
+end one_dp
+
+// ## The frame
+//
+// Everything drawn, in one function, because the screenshot path draws too — and a screenshot taken
+// from a buffer somebody else filled in is a screenshot of the wrong moment. That was this program's
+// first bug: `--shot` wrote the file after stepping the simulation forward and before drawing it
+// again, so the pile in the picture was still in mid-air.
+
+// ## The frame
+//
+// Everything drawn, in one function, because **the screenshot path draws too** — and a screenshot
+// taken from a buffer somebody else filled is a picture of the wrong moment. That was this program's
+// first bug: `--shot` wrote the file after stepping the simulation forward and before drawing it
+// again, so the pile in the image was still in mid-air.
+
+private render(cr: &Context, sc: *Scene, fps: real, show_fps: bool)
+    paint(cr, BACKGROUND)
+    cr.paint()
+
+    // From here to `restore`, everything is drawn in **metres**: the matrix carries the scale and the
+    // flip, so a shape is drawn at the coordinates the simulation actually holds and a line width is
+    // a width in the world.
+    cr.save()
+    cr.translate(ORIGIN_X, ORIGIN_Y)
+    cr.scale(SCALE, -SCALE)
+    cr.set_line_join(LineJoin.Round)
+
+    var held_body: Option[Body] = None
+
+    if sc[0].held.is_some() then held_body = Some(sc[0].held.unwrap().joint.body_b())
+
+    // The ground first, so everything else sits on top of it.
+    for g in sc[0].anchor.shapes()
+        draw_shape(cr, g, GROUND)
+
+    var awake = 0
+    var bodies = 0
+
+    // **There is no list of bodies kept by this program.** A body is reached from the world through a
+    // query, so the pile is walked by asking what overlaps the visible region — which is what a game
+    // would do anyway to decide what to draw.
+    val visible = AABB(Vec2(-f32(VIEW_METRES), -6.0), Vec2(f32(VIEW_METRES), f32(VIEW_METRES)))
+
+    for shape in sc[0].world.overlap_aabb(visible)
+        val b = shape.body()
+
+        if b.kind() == BodyKind.Static then continue
+
+        bodies += 1
+
+        if b.is_awake() then awake += 1
+
+        draw_shape(cr, shape, colour_of(b, held_body.is_some() && held_body.unwrap() == b))
+
+    // The drag itself: a line from the cursor to the point on the body it took hold of.
+    if sc[0].held.is_some()
+        val j = sc[0].held.unwrap()
+        val grip = j.joint.body_b().world_point(j.joint.local_anchor_b())
+        val target = j.target()
+
+        paint_alpha(cr, HELD, 0.7)
+        cr.set_line_width(OUTLINE_WIDTH * 1.5)
+        cr.move_to(real(grip.x), real(grip.y))
+        cr.line_to(real(target.x), real(target.y))
+        cr.stroke()
+
+    // The hits, fading — a ring that grows as it goes.
+    for i in 0..<sc[0].flashes.len()
+        val f = sc[0].flashes[i]
+
+        paint_alpha(cr, FLASH, f.life * 0.8)
+        cr.set_line_width(OUTLINE_WIDTH * 1.5)
+        cr.arc(real(f.at.x), real(f.at.y), 0.12 + (1.0 - f.life) * 0.5, 0.0, 2.0 * pi)
+        cr.stroke()
+
+    cr.restore()
+
+    // The HUD, back in device coordinates — text under a flipped y scale would be upside down, which
+    // is the one thing the world matrix cannot be left on for.
+    cr.select_font_face("sans-serif", FontSlant.Normal, FontWeight.Normal)
+    cr.set_font_size(15.0)
+    paint(cr, TEXT)
+
+    // The frame rate is left off the screenshot rather than printed as a zero: the shot is one frame
+    // and there is no rate to report.
+    val rate = if show_fps then "  ·  " + one_dp(fps) + " fps" else ""
+    val state = if sc[0].paused then "  ·  paused" else ""
+
+    label(cr, 16.0, 26.0, str(bodies) + " bodies, " + str(awake) + " awake" + rate + state)
+    label(cr, 16.0, real(H) - 16.0,
+          "drag a body  ·  click empty space to drop one  ·  space pause  ·  R reset  ·  Q quit")
+end render
+
+main(args: []string) -> Result[unit, string]
+    val offscreen = args.len > 1 && args[1] == "--shot"
+
+    if !init(INIT_VIDEO)
+        return Err(f"SDL would not start: ${error()}%s")
+
+    val opened = create_window("box2d + cairo + SDL3 — a playground", W, H, 0)
+
+    if opened.is_none()
+        return Err(f"the window would not open: ${error()}%s")
+
+    var win = opened.unwrap()
+    val started = win.create_renderer()
+
+    if started.is_none()
+        return Err(f"the renderer would not start: ${error()}%s")
+
+    var r = started.unwrap()
+
+    // The one buffer both libraries touch. Cairo owns it; SDL only ever reads it.
+    var frame = image_surface(Format.Argb32, W, H)
+
+    if !frame.ok()
+        return Err(f"the drawing surface could not be made: ${frame.status()}%s")
+
+    val made = r.create_texture(PixelFormat.Argb8888, TextureAccess.Streaming, i32(W), i32(H))
+
+    if made.is_none()
+        return Err(f"the texture could not be made: ${error()}%s")
+
+    var tex = made.unwrap()
+
+    r.set_vsync(true)
+
+    // The scene is built by `reset`, so these are placeholders that live for one statement. The
+    // world made here is dropped the moment `reset` assigns over it, which is the destructor doing
+    // exactly its job.
+    val w0 = world()
+    var scene = Scene(w0, None, w0.body(body_def()), buf(), false, 0, 0u64)
+
+    reset(&scene)
+
+    var running = true
+    var last = ticks_ns()
+    var frames = 0
+    var fps_at = last
+    var fps = 0.0
+    var mx = 0.0
+    var my = 0.0
+
+    while running
+        var pending = poll_event()
+
+        while pending.is_some()
+            val e = pending.unwrap()
+            val kind = e.kind()
+
+            if kind == EventKind.Quit
+                running = false
+            elif kind == EventKind.MouseMotion
+                mx = real(e.mouse_x())
+                my = real(e.mouse_y())
+
+                // Dragging is one call: the joint chases a target, and moving the target is the
+                // whole of the interaction.
+                if scene.held.is_some() then scene.held.unwrap().set_target(world_at(mx, my))
+            elif kind == EventKind.MouseButtonDown
+                mx = real(e.mouse_x())
+                my = real(e.mouse_y())
+
+                val at = world_at(mx, my)
+                val under = pick(scene.world, at)
+
+                if under.is_some()
+                    val body = under.unwrap()
+
+                    // `max_force` is scaled to the body's mass, so a heavy body is dragged as
+                    // firmly as a light one rather than trailing behind the cursor.
+                    scene.held = Some(mouse_joint(scene.anchor, body, at, hertz = 5.0,
+                                                  damping_ratio = 0.7,
+                                                  max_force = 1000.0 * body.mass()))
+                    body.set_awake(true)
+                else
+                    drop_one(&scene, at)
+            elif kind == EventKind.MouseButtonUp
+                if scene.held.is_some()
+                    scene.held.unwrap().joint.remove()
+                    scene.held = None
+            elif kind == EventKind.KeyDown
+                // SDL spells an ordinary key as its own character, so these are ASCII.
+                val k = e.key_code()
+
+                if k == 113u32 || k == 27u32
+                    running = false
+                elif k == 32u32
+                    scene.paused = !scene.paused
+                elif k == 114u32
+                    // The held joint belongs to the world about to be dropped, so it goes first.
+                    scene.held = None
+
+                    reset(&scene)
+
+            pending = poll_event()
+
+        val now = ticks_ns()
+        var dt = real(now - last) / 1.0e9
+
+        if offscreen then dt = 1.0 / 60.0
+        if dt > 0.25 then dt = 0.25
+
+        last = now
+
+        if !scene.paused
+            scene.world.step(f32(dt))
+
+            // Hit events are only reported for the step they happened in, so they are copied out
+            // now and drawn over the next fifth of a second.
+            for h in scene.world.contact_events().hits
+                scene.flashes.push(Flash(h.point, h.approach_speed, 1.0))
+
+        var kept: Buf[Flash] = buf()
+
+        for i in 0..<scene.flashes.len()
+            val f = scene.flashes[i]
+            val life = f.life - dt * 5.0
+
+            if life > 0.0 then kept.push(Flash(f.at, f.speed, life))
+
+        scene.flashes = kept
+
+        frames += 1
+
+        if now - fps_at > 500_000_000u64
+            fps = real(frames) * 1.0e9 / real(now - fps_at)
+            frames = 0
+            fps_at = now
+
+        var cr = context(frame)
+
+        render(cr, &scene, fps, !offscreen)
+
+        frame.flush()
+
+        tex.update(as_ptr(frame.data()), i32(frame.stride()))
+        r.clear()
+        r.copy(tex)
+        r.present()
+
+        if offscreen
+            // A screenshot of a physics demo is only worth anything if the pile has settled, so the
+            // simulation is run forward to a fixed state — the same number of steps every time, from
+            // the same seed, so the image is reproducible. Two more are dropped at the end and given
+            // a moment to fall, so the picture shows both states at once: a sleeping pile, dimmed,
+            // with something still awake above it.
+            for _ in 0..<300
+                scene.world.step(1.0 / 60.0)
+
+            drop_one(&scene, Vec2(-1.2, 5.0))
+            drop_one(&scene, Vec2(1.4, 6.0))
+
+            for _ in 0..<22
+                scene.world.step(1.0 / 60.0)
+
+            var shot = context(frame)
+
+            render(shot, &scene, 0.0, false)
+            frame.flush()
+
+            if !frame.write_png("demo.png").ok()
+                return Err("the screenshot could not be written")
+
+            print("wrote demo.png")
+            running = false
+
+    quit()
+    Ok(())
+end main
+
+// Where a window position is in the world. The inverse of the matrix set on each frame, and the one
+// place this program does the conversion by hand — cairo does the other direction for the drawing.
+private world_at(x: real, y: real) -> Vec2 =
+    Vec2(f32((x - ORIGIN_X) / SCALE), f32((ORIGIN_Y - y) / SCALE))
