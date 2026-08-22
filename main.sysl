@@ -36,7 +36,6 @@ import sh.sysl.box2d.*
 import sh.sysl.box2d.math.{Vec2, Transform, AABB, zero, rot}
 import sh.sysl.cairo.*
 import sh.sysl.sdl3.*
-import sh.sysl.sdl3.c.INIT_VIDEO
 import sysl.math.{Float, pi}
 import sysl.rand.rng
 import sysl.slices.as_ptr

@@ -1,3 +1,4 @@
 github.com/sysl-lang/box2d v0.1.0 sha256:756b4b7ae3be40b9c3bf318dc942ad10f04588abe3071389a6b1a6d8c8eba6f3
 github.com/sysl-lang/cairo v0.3.2 sha256:9e8b302a6a59d3ef48f64b340b8e84581cef528f48acb30ed11a11643aae1251
 github.com/sysl-lang/sdl3 v0.2.1 sha256:fbf2bedeea4e2df35aa82729b1a42701cd8bb4149be4772d5b6a365b410fce59
+github.com/sysl-lang/sdl3 v0.3.0 sha256:75737cb143e5f550bb5072748b2b39e6eaf1b07d5ed1bd13d03ae0c42575e7bd
