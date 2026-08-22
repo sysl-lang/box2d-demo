@@ -40,7 +40,6 @@ import sysl.math.{Float, pi}
 import sysl.rand.rng
 import sysl.slices.as_ptr
 import sysl.buf.{Buf, buf}
-import sh.sysl.box2d.c
 
 // ## The window, and the piece of the world it shows
 
@@ -206,7 +205,7 @@ end pick
 
 const OUTLINE_WIDTH: real = 0.035
 
-private draw_polygon(cr: &Context, xf: Transform, p: c.Polygon)
+private draw_polygon(cr: &Context, xf: Transform, p: Polygon)
     val first = xf.apply(p.vertices[0])
 
     cr.move_to(real(first.x), real(first.y))
@@ -222,7 +221,7 @@ end draw_polygon
 // A capsule is a **round-capped stroke**, which is what a capsule is: the set of points within
 // `radius` of a segment. Filling it as a path would mean two arcs and two tangent lines; stroking it
 // is one line and cairo's round cap is exact.
-private stroke_capsule(cr: &Context, xf: Transform, cap: c.Capsule, width_extra: real)
+private stroke_capsule(cr: &Context, xf: Transform, cap: Capsule, width_extra: real)
     val a = xf.apply(cap.center1)
     val b = xf.apply(cap.center2)
 
