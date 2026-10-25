@@ -7,13 +7,14 @@
 
 package {
   name    = "box2d-demo"
-  version = "0.1.0"
+  version = "0.1.1"
+  sysl    = "0.6.0"
 }
 
 dependencies {
-  box2d { git = "github.com/sysl-lang/box2d", version = "0.1.4" }
-  cairo { git = "github.com/sysl-lang/cairo", version = "0.3.2" }
-  sdl3  { git = "github.com/sysl-lang/sdl3",  version = "0.3.6" }
+  box2d { git = "github.com/sysl-lang/box2d", version = "0.1.5" }
+  cairo { git = "github.com/sysl-lang/cairo", version = "0.3.4" }
+  sdl3  { git = "github.com/sysl-lang/sdl3",  version = "0.3.11" }
 }
 
 requires {
@@ -32,5 +33,5 @@ requires {
 // than a reader copying its layout onto a command line — and getting it right, which meant knowing
 // that cairo's headers sit in `include/cairo` while SDL3's want the directory *above* `SDL3`.
 //
-// Needs sysl 0.0.56, cairo 0.3.2 and sdl3 0.2.1. On a machine with no pkg-config the two
+// Needs sysl 0.6.0. On a machine with no pkg-config the two
 // `--include-path` flags still answer it.

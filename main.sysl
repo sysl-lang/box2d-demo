@@ -313,7 +313,7 @@ end label
 private one_dp(x: real) -> string
     val n = int(x * 10.0 + 0.5)
 
-    str(n / 10) + "." + str(n % 10)
+    (n / 10).to_string() + "." + (n % 10).to_string()
 end one_dp
 
 // ## The frame
@@ -403,7 +403,7 @@ private render(cr: &Context, sc: *Scene, fps: real, show_fps: bool)
     val rate = if show_fps then "  ·  " + one_dp(fps) + " fps" else ""
     val state = if sc[0].paused then "  ·  paused" else ""
 
-    label(cr, 16.0, 26.0, str(bodies) + " bodies, " + str(awake) + " awake" + rate + state)
+    label(cr, 16.0, 26.0, bodies.to_string() + " bodies, " + awake.to_string() + " awake" + rate + state)
     label(cr, 16.0, real(H) - 16.0,
           "drag a body  ·  click empty space to drop one  ·  space pause  ·  R reset  ·  Q quit")
 end render
