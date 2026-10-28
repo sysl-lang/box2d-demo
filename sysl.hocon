@@ -12,7 +12,7 @@ package {
 }
 
 dependencies {
-  box2d { git = "github.com/sysl-lang/box2d", version = "0.1.5" }
+  box2d { git = "github.com/sysl-lang/box2d", version = "0.1.6" }
   cairo { git = "github.com/sysl-lang/cairo", version = "0.3.4" }
   sdl3  { git = "github.com/sysl-lang/sdl3",  version = "0.3.11" }
 }
