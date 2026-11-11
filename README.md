@@ -43,7 +43,7 @@ clang reporting a file nobody wrote.
 That is worth a line because of what it replaces. This page used to carry three flags, and one of
 them had to know that cairo's headers are in `include/cairo` while SDL3's want the directory *above*
 `SDL3` — a distinction no reader could be expected to guess, and the reason the packages had to spell
-it out in prose. Needs sysl 0.6.0 or later.
+it out in prose. Needs sysl 0.10.0 or later.
 
 ## Drawn in metres, not in pixels
 
