@@ -4,3 +4,4 @@ github.com/sysl-lang/cairo v0.3.4 sha256:7cb2a4f0e3bd98acd834316286f533ed5275fed
 github.com/sysl-lang/png v0.2.4 sha256:5cc0bad5b1aebba8e4a2c6a6a3523d9262843e21d45672a426826406ca1cb63b
 github.com/sysl-lang/sdl3 v0.3.11 sha256:ddfec9152616d354a488ad9c34fddcc9058b14e1fdbf40f4a5fab1a7214bb170
 github.com/sysl-lang/sdl3 v0.3.25 sha256:a3b370f7b3919c82fbe71e69a9bd848a308c82c45c23cef9bdfe963d775f2405
+github.com/sysl-lang/sdl3 v0.3.27 sha256:009968ed7e555e168342590c9e34e1254f9338f03f736b1135da7a0fd8b8fd99
